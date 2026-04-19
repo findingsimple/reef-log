@@ -1,1 +1,25 @@
 /.scratch
+.DS_Store
+
+# Local Claude Code settings (per-machine permissions)
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+
+# Tests / lint
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Local DB (the real one lives at ~/.reef-log/reef.db, but guard against
+# accidental commits if anyone uses --db inside the repo)
+*.db
+*.db-wal
+*.db-shm
