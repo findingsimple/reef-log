@@ -19,8 +19,8 @@ A personal, single-user, local-only reef tank log. One Python package, one SQLit
 ```
 reef_log/
 ├── db.py          # ✅ sqlite3 stdlib + WAL + FKs + migrations list
-├── ops.py         # ✅ the seam: add_test_session, add_maintenance, get_*, analyze_trends
-├── mcp_server.py  # ✅ FastMCP stdio entry — six tools registered
+├── ops.py         # ✅ the seam: add_test_session, add_maintenance, get_*, analyze_trends, compare_trends
+├── mcp_server.py  # ✅ FastMCP stdio entry — seven tools registered
 ├── cli.py         # ✅ click: test add, maintenance add, history
 └── extract.py     # ⏳ step 4 — Hanna photo → reading via Claude vision
 ```
@@ -53,6 +53,9 @@ uv run reef-log --help                               # CLI
 - `_to_iso` rejects naive datetimes — callers must pass timezone-aware datetimes.
 - `tz_assumed=1` flags rows whose timestamp came from naive EXIF interpreted as laptop local time.
 - `parameter` is `TEXT`, not an enum — adding salinity/pH later is a no-op.
+- `tank` is `TEXT` and required on every write. Canonical values are `"display"` and `"frag"` for real tanks; `"both"` is allowed only on `maintenance_events` for system-wide events (e.g. RO/DI filter swap). Validation lives in `ops._check_tank` / `_check_maintenance_tank` — a typo would otherwise silently disappear from `compare_trends` and tank-filtered reads.
+- A real-tank query (`tank="display"` or `"frag"`) on maintenance read paths automatically expands to also match `"both"` rows so shared events show up in either tank's view. Querying `tank="both"` returns only the literal shared events.
+- Test sessions are per-tank (one `test_results` row = one tank's reading session). `tank="both"` is rejected on `test_results` since per-parameter values are always tank-specific.
 - Append-mostly. Use `UPDATE` for corrections, not deletes.
 - Photos stay where they live on disk. Store path + SHA-256 in `processed_photos`, never copy into the project dir or DB.
 
@@ -94,7 +97,7 @@ claude mcp add reef-log --scope user -- /bin/bash -c "cd /path/to/reef-log && .v
 
 Replace `/path/to/reef-log` with the actual path to this repository. This launches the MCP server from the project's `.venv` directly — no `uv run` in the hot path, so startup is fast. Tradeoff: you must run `uv sync` yourself after pulling changes that touch dependencies.
 
-Verify with `claude mcp list`. Restart Claude Desktop. The 6 tools (`log_test`, `log_maintenance`, `get_recent`, `get_parameter_history`, `get_last_event`, `analyze_trends`) should appear.
+Verify with `claude mcp list`. Restart Claude Desktop. The 7 tools (`log_test`, `log_maintenance`, `get_recent`, `get_parameter_history`, `get_last_event`, `analyze_trends`, `compare_trends`) should appear.
 
 ## What's next
 
