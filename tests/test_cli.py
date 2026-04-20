@@ -229,3 +229,95 @@ def test_history_rejects_unknown_parameter(db_path: Path):
     runner = CliRunner()
     result = runner.invoke(main, ["--db", str(db_path), "history", "--parameter", "salinity"])
     assert result.exit_code != 0
+
+
+# ---------- photos pending ----------
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "photos"
+
+
+def test_photos_pending_empty_directory(db_path: Path, tmp_path: Path):
+    code, out = _run(["photos", "pending", str(tmp_path)], db_path)
+    assert code == 0
+    assert "No photos found" in out
+
+
+def test_photos_pending_lists_all_when_none_logged(db_path: Path, tmp_path: Path):
+    # Copy a couple of real fixtures so we have actual photos to scan.
+    import shutil
+
+    shutil.copy(FIXTURES / "HI758_calcium_display.jpg", tmp_path / "a.jpg")
+    shutil.copy(FIXTURES / "HI758_calcium_frag.jpg", tmp_path / "b.jpg")
+
+    code, out = _run(["photos", "pending", str(tmp_path)], db_path)
+    assert code == 0
+    assert "Scanned 2" in out
+    assert "2 new" in out
+    assert "a.jpg" in out
+    assert "b.jpg" in out
+    assert "already logged" not in out  # no "N already logged" line when N=0
+
+
+def test_photos_pending_excludes_already_logged(db_path: Path, tmp_path: Path):
+    import shutil
+
+    # Log one photo via the CLI-free ops path (we're testing pending, not logging).
+    from reef_log import db as _db
+    from reef_log import ops
+
+    src_a = FIXTURES / "HI758_calcium_display.jpg"
+    src_b = FIXTURES / "HI758_calcium_frag.jpg"
+    shutil.copy(src_a, tmp_path / "a.jpg")
+    shutil.copy(src_b, tmp_path / "b.jpg")
+
+    conn = _db.connect(db_path)
+    try:
+        ops.log_test_from_photo(
+            conn,
+            path=tmp_path / "a.jpg",
+            tank="display",
+            measurements=[{"parameter": "calcium", "value": 446}],
+        )
+    finally:
+        conn.close()
+
+    code, out = _run(["photos", "pending", str(tmp_path)], db_path)
+    assert code == 0
+    assert "1 new" in out
+    assert "b.jpg" in out
+    assert "1 already logged" in out
+
+
+def test_photos_pending_ignores_non_image_extensions(db_path: Path, tmp_path: Path):
+    import shutil
+
+    shutil.copy(FIXTURES / "HI758_calcium_display.jpg", tmp_path / "photo.jpg")
+    (tmp_path / "readme.txt").write_text("ignore me")
+    (tmp_path / "IMG_X.HEIC").write_bytes(b"heic is explicitly unsupported")
+
+    code, out = _run(["photos", "pending", str(tmp_path)], db_path)
+    assert code == 0
+    assert "Scanned 1" in out  # Only the .jpg
+    assert "readme.txt" not in out
+    assert "HEIC" not in out
+
+
+def test_photos_pending_recursive_flag(db_path: Path, tmp_path: Path):
+    import shutil
+
+    shutil.copy(FIXTURES / "HI758_calcium_display.jpg", tmp_path / "top.jpg")
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    shutil.copy(FIXTURES / "HI758_calcium_frag.jpg", subdir / "inside.jpg")
+
+    # Without --recursive: only top-level.
+    _code, out_flat = _run(["photos", "pending", str(tmp_path)], db_path)
+    assert "Scanned 1" in out_flat
+    assert "top.jpg" in out_flat
+    assert "inside.jpg" not in out_flat
+
+    # With --recursive: both.
+    _code, out_rec = _run(["photos", "pending", "--recursive", str(tmp_path)], db_path)
+    assert "Scanned 2" in out_rec
+    assert "inside.jpg" in out_rec

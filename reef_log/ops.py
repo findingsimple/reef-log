@@ -400,6 +400,26 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def partition_photos_by_processed(
+    conn: sqlite3.Connection, paths: list[Path]
+) -> tuple[list[Path], list[Path]]:
+    """Split a list of photo paths into (pending, already_logged) by SHA-256.
+
+    Used by `reef-log photos pending` to let the user see at a glance how
+    much of a directory is new vs. already backfilled before they start a
+    Claude Desktop conversation. No writes, no EXIF parsing — just hash +
+    existence lookup.
+    """
+    pending: list[Path] = []
+    already_logged: list[Path] = []
+    for p in paths:
+        if is_photo_processed(conn, _sha256_file(p)):
+            already_logged.append(p)
+        else:
+            pending.append(p)
+    return pending, already_logged
+
+
 def _parse_exif_offset(offset_str: str) -> timezone:
     """Parse EXIF OffsetTimeOriginal ('+HH:MM' or '-HH:MM') to a tzinfo.
 
