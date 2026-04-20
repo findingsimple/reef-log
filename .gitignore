@@ -23,3 +23,9 @@ htmlcov/
 *.db
 *.db-wal
 *.db-shm
+
+# HEIC originals from the iPhone are kept locally for reference but not
+# tracked — the JPG fixtures in tests/fixtures/photos/ are what tests use.
+tests/fixtures/photos/*.HEIC
+tests/fixtures/photos/.DS_Store
+tests/fixtures/photos/**/.DS_Store
