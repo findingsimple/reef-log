@@ -513,19 +513,28 @@ def log_test_from_photo(
             notes=notes,
             tz_assumed=tz_assumed,
         )
-        conn.execute(
-            "INSERT INTO processed_photos "
-            "(sha256, path, test_result_id, status, extracted_payload, tank) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                sha256,
-                str(p.resolve()),
-                test_result_id,
-                "committed",
-                json.dumps({"measurements": measurements, "notes": notes}),
-                tank,
-            ),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO processed_photos "
+                "(sha256, path, test_result_id, status, extracted_payload, tank) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    sha256,
+                    str(p.resolve()),
+                    test_result_id,
+                    "committed",
+                    json.dumps({"measurements": measurements, "notes": notes}),
+                    tank,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Scoped narrowly to the processed_photos INSERT because the
+            # only UNIQUE constraint hit here is sha256 — i.e. another writer
+            # beat us to this photo between is_photo_processed and now.
+            # Translate to the typed exception so callers see one consistent
+            # shape for "this photo is already logged". The surrounding
+            # transaction context manager still rolls back.
+            raise AlreadyProcessed(sha256) from exc
 
     return {
         "test_result_id": test_result_id,

@@ -997,15 +997,20 @@ def test_max_photo_bytes_is_pinned_to_50_mib():
 # ---------- log_test_from_photo — atomicity ----------
 
 
-def test_log_test_from_photo_rollback_on_photo_insert_failure(
-    conn: sqlite3.Connection, tmp_path: Path
+def test_log_test_from_photo_rollback_on_mid_transaction_failure(
+    conn: sqlite3.Connection,
 ):
-    """Force a mid-transaction failure by poisoning the processed_photos
-    table with a BEFORE-INSERT trigger that always aborts. If the transaction
-    wrap works, the test_results + test_measurements rows must also vanish.
+    """Force a mid-transaction failure by poisoning test_measurements with
+    a BEFORE-INSERT trigger that aborts. The failure happens inside
+    add_test_session (after the test_results INSERT), so the transaction
+    wrap must roll back the earlier test_results row too.
+
+    Uses test_measurements (not processed_photos) so the trigger's
+    IntegrityError bypasses the narrowly-scoped race-translation catch in
+    ops — we want a raw rollback here, not the AlreadyProcessed path.
     """
     conn.execute(
-        "CREATE TRIGGER fail_photo BEFORE INSERT ON processed_photos "
+        "CREATE TRIGGER fail_measurement BEFORE INSERT ON test_measurements "
         "BEGIN SELECT RAISE(ABORT, 'simulated failure'); END"
     )
     try:
@@ -1017,7 +1022,9 @@ def test_log_test_from_photo_rollback_on_photo_insert_failure(
                 measurements=[{"parameter": "calcium", "value": 446}],
             )
 
-        # Every write from the aborted transaction must be gone.
+        # Every write from the aborted transaction must be gone — the
+        # test_results INSERT happened before the failing measurement INSERT,
+        # and the processed_photos INSERT never ran.
         (tr_count,) = conn.execute("SELECT COUNT(*) FROM test_results").fetchone()
         (tm_count,) = conn.execute("SELECT COUNT(*) FROM test_measurements").fetchone()
         (pp_count,) = conn.execute("SELECT COUNT(*) FROM processed_photos").fetchone()
@@ -1025,18 +1032,19 @@ def test_log_test_from_photo_rollback_on_photo_insert_failure(
         assert tm_count == 0
         assert pp_count == 0
     finally:
-        conn.execute("DROP TRIGGER fail_photo")
+        conn.execute("DROP TRIGGER fail_measurement")
 
 
-def test_log_test_from_photo_integrity_error_on_race(
+def test_log_test_from_photo_race_translates_to_already_processed(
     conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ):
     """Simulate the SHA race: is_photo_processed returns False, but the
     INSERT hits the UNIQUE constraint because another caller beat us to it.
-    ops raises the raw IntegrityError (no typed wrapper); the MCP layer
-    translates it to `already_processed`.
+    ops catches the IntegrityError and re-raises AlreadyProcessed so callers
+    see one consistent exception type regardless of which path caught it.
     """
     photo = FIXTURES / "HI758_calcium_display.jpg"
+    known_sha = _sha256_of(photo)
 
     # Seed the dedup row first so the INSERT will collide.
     ops.log_test_from_photo(
@@ -1049,13 +1057,16 @@ def test_log_test_from_photo_integrity_error_on_race(
     # Force is_photo_processed to lie so we bypass the pre-check.
     monkeypatch.setattr(ops, "is_photo_processed", lambda conn, sha: False)
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(ops.AlreadyProcessed) as exc_info:
         ops.log_test_from_photo(
             conn,
             path=photo,
             tank="display",
             measurements=[{"parameter": "calcium", "value": 446}],
         )
+    assert exc_info.value.sha256 == known_sha
+    # The underlying IntegrityError is chained as __cause__ for debugging.
+    assert isinstance(exc_info.value.__cause__, sqlite3.IntegrityError)
 
     # Second attempt rolled back — row count unchanged from the first call.
     (tr_count,) = conn.execute("SELECT COUNT(*) FROM test_results").fetchone()

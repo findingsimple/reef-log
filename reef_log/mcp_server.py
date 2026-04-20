@@ -181,14 +181,12 @@ def log_test_from_photo(
                 notes=notes,
             )
         except ops.AlreadyProcessed as exc:
+            # Covers both the pre-check path and the race-lost path —
+            # ops.log_test_from_photo translates IntegrityError → AlreadyProcessed
+            # so the message shape is identical either way.
             return {"error": "already_processed", "message": str(exc)}
         except ops.InvalidTank as exc:
             return {"error": "invalid_tank", "message": str(exc)}
-        except sqlite3.IntegrityError as exc:
-            # Lost a race with a concurrent call on the same SHA (pre-check
-            # passed but the INSERT hit the UNIQUE constraint). Surface as
-            # the same structured error as the dedup path.
-            return {"error": "already_processed", "message": str(exc)}
         except FileNotFoundError as exc:
             return {"error": "not_found", "message": str(exc)}
         except UnidentifiedImageError as exc:
