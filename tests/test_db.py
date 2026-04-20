@@ -130,17 +130,13 @@ def test_v2_tank_default_applies_when_column_omitted(conn: sqlite3.Connection):
         "INSERT INTO test_results (measured_at, source) VALUES (?, ?)",
         ("2026-04-19T00:00:00.000Z", "test"),
     )
-    row = conn.execute(
-        "SELECT tank FROM test_results WHERE id = ?", (cur.lastrowid,)
-    ).fetchone()
+    row = conn.execute("SELECT tank FROM test_results WHERE id = ?", (cur.lastrowid,)).fetchone()
     assert row["tank"] == "display"
 
 
 def test_v2_tank_indexes_exist(conn: sqlite3.Connection):
     """If the tank indexes are dropped from the migration, this test catches it."""
     indexes = {
-        r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
     }
     assert {"idx_test_results_tank", "idx_maintenance_events_tank"}.issubset(indexes)

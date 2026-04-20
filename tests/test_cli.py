@@ -40,9 +40,7 @@ def test_test_add_logs_session(db_path: Path):
 
 def test_test_add_requires_tank(db_path: Path):
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["--db", str(db_path), "test", "add", "--alkalinity", "8.2"]
-    )
+    result = runner.invoke(main, ["--db", str(db_path), "test", "add", "--alkalinity", "8.2"])
     assert result.exit_code != 0
     assert "--tank" in result.output
 
@@ -70,9 +68,7 @@ def test_test_add_rejects_shared_tank(db_path: Path):
 
 def test_test_add_requires_at_least_one_parameter(db_path: Path):
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["--db", str(db_path), "test", "add", "--tank", "display"]
-    )
+    result = runner.invoke(main, ["--db", str(db_path), "test", "add", "--tank", "display"])
     assert result.exit_code != 0
     assert "at least one parameter flag" in result.output
 

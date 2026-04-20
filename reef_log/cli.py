@@ -53,9 +53,7 @@ def test() -> None:
 @click.option("--nitrate", type=float, help="ppm")
 @click.option("--notes", default=None)
 @click.pass_context
-def test_add(
-    ctx: click.Context, tank: str, notes: str | None, **values: float | None
-) -> None:
+def test_add(ctx: click.Context, tank: str, notes: str | None, **values: float | None) -> None:
     """Log a test session. Pass one or more parameter flags."""
     measurements = [{"parameter": name, "value": v} for name, v in values.items() if v is not None]
     if not measurements:
@@ -63,9 +61,7 @@ def test_add(
 
     conn = db_module.connect(ctx.obj["db_path"])
     try:
-        test_id = ops.add_test_session(
-            conn, measurements, tank=tank, source="cli", notes=notes
-        )
+        test_id = ops.add_test_session(conn, measurements, tank=tank, source="cli", notes=notes)
     finally:
         conn.close()
 
@@ -117,9 +113,7 @@ def maintenance_add(
 
     conn = db_module.connect(ctx.obj["db_path"])
     try:
-        mid = ops.add_maintenance(
-            conn, event_type, tank=tank, details=parsed, notes=notes
-        )
+        mid = ops.add_maintenance(conn, event_type, tank=tank, details=parsed, notes=notes)
     finally:
         conn.close()
 
@@ -167,9 +161,7 @@ def history(
             click.echo(f"{r['at']} {tank_tag:<9} TEST  {measurements}")
         else:
             detail_str = json.dumps(r["details"]) if r["details"] else ""
-            click.echo(
-                f"{r['at']} {tank_tag:<9} {r['event_type'].upper():<18} {detail_str}"
-            )
+            click.echo(f"{r['at']} {tank_tag:<9} {r['event_type'].upper():<18} {detail_str}")
 
 
 if __name__ == "__main__":
