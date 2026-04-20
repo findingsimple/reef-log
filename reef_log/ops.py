@@ -7,14 +7,45 @@ Functions take a sqlite3.Connection so callers can wire up tmp DBs in tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
 import statistics
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
+from PIL import ExifTags, Image
+
+from reef_log import db as db_module
+
+
+class AlreadyProcessed(ValueError):
+    """Raised when a photo's SHA-256 is already in `processed_photos`.
+
+    Typed so the MCP wrapper can translate to a structured error without a
+    fragile substring match on the message.
+    """
+
+    def __init__(self, sha256: str):
+        super().__init__(f"photo already processed (sha256={sha256})")
+        self.sha256 = sha256
+
+
+class InvalidTank(ValueError):
+    """Raised when a caller supplies an unknown tank name.
+
+    Typed so the MCP wrapper can surface a distinct `invalid_tank` error
+    (rather than lumping it under the generic `invalid_photo` bucket).
+    Still subclasses `ValueError` so existing `except ValueError` paths
+    keep working.
+    """
+
+
 # Default canonical unit per parameter. Callers may override per-measurement
-# (e.g. when normalizing HI774 ULR ppb → ppm in extract.py).
+# (e.g. Claude normalizes HI774 ULR ppb → ppm in conversation before calling
+# log_test_from_photo with unit='ppm').
 DEFAULT_UNITS: dict[str, str] = {
     "alkalinity": "dKH",
     "calcium": "ppm",
@@ -40,14 +71,12 @@ MAINTENANCE_TANKS: tuple[str, ...] = TANKS + (SHARED_TANK,)
 
 def _check_tank(tank: str) -> None:
     if tank not in TANKS:
-        raise ValueError(f"unknown tank {tank!r}; expected one of {TANKS}")
+        raise InvalidTank(f"unknown tank {tank!r}; expected one of {TANKS}")
 
 
 def _check_maintenance_tank(tank: str) -> None:
     if tank not in MAINTENANCE_TANKS:
-        raise ValueError(
-            f"unknown tank {tank!r}; expected one of {MAINTENANCE_TANKS}"
-        )
+        raise InvalidTank(f"unknown tank {tank!r}; expected one of {MAINTENANCE_TANKS}")
 
 
 def _maintenance_tank_filter(tank: str | None) -> tuple[str, ...] | None:
@@ -352,6 +381,160 @@ def analyze_trends(
     }
 
 
+# Guards against accidentally hashing /dev/urandom (hangs) or a zero-byte
+# file (deterministic empty-file SHA collides across every future empty file).
+MIN_PHOTO_BYTES = 1
+MAX_PHOTO_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+# Reject wildly out-of-range EXIF timestamps that usually mean the camera's
+# clock was unset. Outside this window we fall through to file mtime.
+MIN_EXIF_YEAR = 2020
+MAX_EXIF_FUTURE = timedelta(days=1)
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _parse_exif_offset(offset_str: str) -> timezone:
+    """Parse EXIF OffsetTimeOriginal ('+HH:MM' or '-HH:MM') to a tzinfo.
+
+    Malformed values raise — EXIF that claims an offset but provides garbage
+    is a real data problem, not something to silently paper over.
+    """
+    if len(offset_str) < 6 or offset_str[0] not in "+-":
+        raise ValueError(f"malformed EXIF offset: {offset_str!r}")
+    sign = 1 if offset_str[0] == "+" else -1
+    h, m = offset_str[1:].split(":")
+    return timezone(sign * timedelta(hours=int(h), minutes=int(m)))
+
+
+def _photo_measured_at(path: Path) -> tuple[datetime, bool]:
+    """Return (UTC-aware datetime, tz_assumed).
+
+    Uses EXIF DateTimeOriginal (+ OffsetTimeOriginal when present). Falls back
+    to file mtime when: EXIF is absent, DateTimeOriginal is missing or
+    unparseable, or the parsed timestamp is outside the sanity window
+    (pre-2020 or more than a day in the future — usually an unset camera
+    clock). Fallbacks always set tz_assumed=True.
+
+    A malformed OffsetTimeOriginal raises (via _parse_exif_offset) rather than
+    silently degrading. Non-image files raise UnidentifiedImageError (bubbled
+    from Image.open) — callers translate at the tool boundary.
+    """
+    mtime_fallback = (datetime.fromtimestamp(path.stat().st_mtime, UTC), True)
+
+    with Image.open(path) as img:
+        exif = img.getexif()
+
+    if not exif:
+        return mtime_fallback
+
+    exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
+    dt_str = exif_ifd.get(ExifTags.Base.DateTimeOriginal.value)
+    offset_str = exif_ifd.get(ExifTags.Base.OffsetTimeOriginal.value)
+
+    if not dt_str:
+        return mtime_fallback
+
+    try:
+        naive = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return mtime_fallback
+
+    if offset_str:
+        aware = naive.replace(tzinfo=_parse_exif_offset(offset_str))
+        tz_assumed = False
+    else:
+        # Naive EXIF — interpret as laptop local tz, flag the assumption.
+        aware = naive.astimezone()
+        tz_assumed = True
+
+    stored = aware.astimezone(UTC)
+    if stored.year < MIN_EXIF_YEAR or stored > datetime.now(UTC) + MAX_EXIF_FUTURE:
+        return mtime_fallback
+
+    return stored, tz_assumed
+
+
+def is_photo_processed(conn: sqlite3.Connection, sha256: str) -> bool:
+    row = conn.execute("SELECT 1 FROM processed_photos WHERE sha256 = ?", (sha256,)).fetchone()
+    return row is not None
+
+
+def log_test_from_photo(
+    conn: sqlite3.Connection,
+    *,
+    path: str | os.PathLike[str],
+    tank: str,
+    measurements: list[dict[str, Any]],
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Log a test session sourced from a photo.
+
+    Claude (in conversation) reads the photo and supplies `measurements`.
+    Server is authoritative for timestamp (parsed from EXIF here) and
+    dedup (SHA-256 of the file contents — rejected if already in
+    processed_photos). No vision API is called.
+
+    All three writes (test_results + test_measurements + processed_photos)
+    are wrapped in a single transaction so a failure between them can't
+    leave an orphan test session that would silently re-log on retry.
+    """
+    _check_tank(tank)
+
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"photo not found: {p}")
+
+    size = p.stat().st_size
+    if size < MIN_PHOTO_BYTES:
+        raise ValueError(f"photo is empty: {p}")
+    if size > MAX_PHOTO_BYTES:
+        raise ValueError(f"photo is too large ({size} bytes > {MAX_PHOTO_BYTES}): {p}")
+
+    sha256 = _sha256_file(p)
+    if is_photo_processed(conn, sha256):
+        raise AlreadyProcessed(sha256)
+
+    measured_at_dt, tz_assumed = _photo_measured_at(p)
+
+    with db_module.transaction(conn):
+        test_result_id = add_test_session(
+            conn,
+            measurements,
+            tank=tank,
+            measured_at=measured_at_dt,
+            source=f"photo:{sha256}",
+            notes=notes,
+            tz_assumed=tz_assumed,
+        )
+        conn.execute(
+            "INSERT INTO processed_photos "
+            "(sha256, path, test_result_id, status, extracted_payload, tank) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                sha256,
+                str(p.resolve()),
+                test_result_id,
+                "committed",
+                json.dumps({"measurements": measurements, "notes": notes}),
+                tank,
+            ),
+        )
+
+    return {
+        "test_result_id": test_result_id,
+        "sha256": sha256,
+        "measured_at": _to_iso(measured_at_dt),
+        "tz_assumed": tz_assumed,
+    }
+
+
 def compare_trends(
     conn: sqlite3.Connection,
     parameter: str,
@@ -367,8 +550,7 @@ def compare_trends(
             parts.append(f"{t} no data")
         else:
             parts.append(
-                f"{t} mean {stats['mean']:.2f} {stats['unit']} "
-                f"(latest {stats['latest_value']:g})"
+                f"{t} mean {stats['mean']:.2f} {stats['unit']} (latest {stats['latest_value']:g})"
             )
     summary = f"{parameter} over {days} days — " + "; ".join(parts) + "."
 

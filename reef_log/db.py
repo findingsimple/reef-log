@@ -99,6 +99,7 @@ def connect(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
 
     _migrate(conn)
     return conn
@@ -114,7 +115,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current >= target:
         return
 
-    with _transaction(conn):
+    with transaction(conn):
         for version in range(current, target):
             for stmt in _split_statements(MIGRATIONS[version]):
                 conn.execute(stmt)
@@ -126,7 +127,14 @@ def _split_statements(script: str) -> list[str]:
 
 
 @contextmanager
-def _transaction(conn: sqlite3.Connection) -> Iterator[None]:
+def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """Wrap a block in BEGIN IMMEDIATE / COMMIT, rolling back on any exception.
+
+    Required because `connect()` sets `isolation_level=None` (autocommit), so
+    multi-statement atomicity is the caller's responsibility. Used by
+    migrations and by `ops.log_test_from_photo` to keep the test session +
+    processed_photos write pair indivisible.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
