@@ -636,6 +636,77 @@ def test_analyze_trends_scoped_per_tank(conn: sqlite3.Connection):
     assert f["latest_value"] == 9.5
 
 
+def test_analyze_trends_rising_direction(conn: sqlite3.Connection):
+    # Values rising ~0.1/day over 10 days — projected change is ~1 dKH
+    # on a mean of ~8.45, which is ~12% — above the 10% stable threshold.
+    for i, v in enumerate([8.0, 8.1, 8.3, 8.5, 8.7, 8.9]):
+        ops.add_test_session(
+            conn,
+            [{"parameter": "alkalinity", "value": v}],
+            tank="display",
+            measured_at=_dt(days_ago=10 - i * 2),
+        )
+    result = ops.analyze_trends(conn, "alkalinity", tank="display", days=30)
+    assert result["direction"] == "rising"
+    assert result["slope_per_day"] is not None
+    assert result["slope_per_day"] > 0
+    assert "trending up" in result["summary"]
+
+
+def test_analyze_trends_falling_direction(conn: sqlite3.Connection):
+    for i, v in enumerate([500, 480, 460, 440, 420, 400]):
+        ops.add_test_session(
+            conn,
+            [{"parameter": "calcium", "value": v}],
+            tank="display",
+            measured_at=_dt(days_ago=10 - i * 2),
+        )
+    result = ops.analyze_trends(conn, "calcium", tank="display", days=30)
+    assert result["direction"] == "falling"
+    assert result["slope_per_day"] < 0
+    assert "trending down" in result["summary"]
+
+
+def test_analyze_trends_stable_direction(conn: sqlite3.Connection):
+    # Values bouncing within ~1% of mean — should be stable despite noise.
+    for i, v in enumerate([430, 432, 429, 431, 430, 432]):
+        ops.add_test_session(
+            conn,
+            [{"parameter": "calcium", "value": v}],
+            tank="display",
+            measured_at=_dt(days_ago=10 - i * 2),
+        )
+    result = ops.analyze_trends(conn, "calcium", tank="display", days=30)
+    assert result["direction"] == "stable"
+    assert result["slope_per_day"] is not None  # still computed, just below threshold
+    assert "stable" in result["summary"]
+
+
+def test_analyze_trends_insufficient_data_with_two_points(conn: sqlite3.Connection):
+    """Need at least 3 points to call a trend — two is noise."""
+    ops.add_test_session(
+        conn,
+        [{"parameter": "alkalinity", "value": 8.0}],
+        tank="display",
+        measured_at=_dt(days_ago=5),
+    )
+    ops.add_test_session(
+        conn,
+        [{"parameter": "alkalinity", "value": 9.0}],
+        tank="display",
+        measured_at=_dt(days_ago=1),
+    )
+    result = ops.analyze_trends(conn, "alkalinity", tank="display", days=30)
+    assert result["direction"] == "insufficient_data"
+    assert result["slope_per_day"] is None
+    assert result["count"] == 2
+
+
+def test_analyze_trends_empty_sets_direction_insufficient(conn: sqlite3.Connection):
+    result = ops.analyze_trends(conn, "alkalinity", tank="display", days=30)
+    assert result["direction"] == "insufficient_data"
+
+
 # ---------- compare_trends ----------
 
 

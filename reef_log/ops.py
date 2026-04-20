@@ -329,6 +329,47 @@ def get_last_event(
     return _row_to_maintenance(row) if row is not None else None
 
 
+# Threshold for calling a slope "stable" rather than rising/falling:
+# if the total change projected over the observed window is less than 10%
+# of the mean value, treat it as noise. Tuned for single-user reef
+# chemistry where a ~10% shift is where the human would actually care.
+_STABLE_SLOPE_RATIO = 0.10
+
+
+def _compute_trend(
+    history: list[dict[str, Any]], values: list[float], mean: float
+) -> tuple[float | None, str]:
+    """Return (slope_per_day, direction) for a time-ordered history.
+
+    direction is 'rising' / 'falling' / 'stable' / 'insufficient_data'.
+    slope_per_day is None when we don't have enough data to compute it.
+    Requires at least 3 points and a non-zero time span.
+    """
+    if len(history) < 3:
+        return None, "insufficient_data"
+
+    first_at = datetime.fromisoformat(history[0]["at"].replace("Z", "+00:00"))
+    days_since_first = [
+        (datetime.fromisoformat(h["at"].replace("Z", "+00:00")) - first_at).total_seconds()
+        / 86400.0
+        for h in history
+    ]
+    if days_since_first[-1] == 0:
+        # All samples at the same instant — can't compute a slope.
+        return None, "insufficient_data"
+
+    lr = statistics.linear_regression(days_since_first, values)
+    slope = lr.slope
+    projected_change = abs(slope * days_since_first[-1])
+    if mean == 0 or projected_change < _STABLE_SLOPE_RATIO * abs(mean):
+        direction = "stable"
+    elif slope > 0:
+        direction = "rising"
+    else:
+        direction = "falling"
+    return slope, direction
+
+
 def analyze_trends(
     conn: sqlite3.Connection,
     parameter: str,
@@ -345,6 +386,7 @@ def analyze_trends(
             "tank": tank,
             "days": days,
             "count": 0,
+            "direction": "insufficient_data",
             "summary": f"{parameter} ({tank}): no measurements in the last {days} days.",
         }
 
@@ -358,10 +400,19 @@ def analyze_trends(
     vmean = statistics.fmean(values)
     vstdev = statistics.stdev(values) if count > 1 else 0.0
 
+    slope, direction = _compute_trend(history, values, vmean)
+
+    trend_phrase = {
+        "rising": "trending up",
+        "falling": "trending down",
+        "stable": "stable",
+        "insufficient_data": "too few points for a trend",
+    }[direction]
+
     summary = (
         f"{parameter} ({tank}): {count} measurement{'s' if count > 1 else ''} "
         f"over {days} days, range {vmin:g}–{vmax:g} {unit}, "
-        f"mean {vmean:.2f} (stdev {vstdev:.2f}). "
+        f"mean {vmean:.2f} (stdev {vstdev:.2f}), {trend_phrase}. "
         f"Latest {latest_value:g} {unit} at {latest_at}."
     )
 
@@ -375,6 +426,8 @@ def analyze_trends(
         "max": vmax,
         "mean": vmean,
         "stdev": vstdev,
+        "slope_per_day": slope,
+        "direction": direction,
         "latest_value": latest_value,
         "latest_at": latest_at,
         "summary": summary,
