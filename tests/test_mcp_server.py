@@ -25,10 +25,7 @@ EXPECTED_TOOLS = {
     "get_last_event",
     "analyze_trends",
     "compare_trends",
-    "log_test_from_photo",
 }
-
-FIXTURES = Path(__file__).parent / "fixtures" / "photos"
 
 
 @pytest.fixture(autouse=True)
@@ -170,103 +167,3 @@ def test_log_test_passes_measured_at_through():
     )
     history = mcp_server.get_parameter_history("calcium", tank="display", days=365)
     assert any(h["at"].startswith("2026-04-01") for h in history)
-
-
-def test_log_test_from_photo_dispatches_and_returns_sha():
-    import hashlib as _h
-
-    photo = FIXTURES / "HI758_calcium_display.jpg"
-    known_sha = _h.sha256(photo.read_bytes()).hexdigest()
-    result = mcp_server.log_test_from_photo(
-        path=str(photo),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446, "checker_model": "HI758"}],
-    )
-    assert "error" not in result
-    assert result["test_result_id"] >= 1
-    assert result["sha256"] == known_sha  # not just "64 chars long"
-    # ISO-8601 UTC shape; parsing EXIF correctness is covered in test_ops.py.
-    assert result["measured_at"].endswith("Z")
-    assert result["tz_assumed"] is False
-
-
-def test_log_test_from_photo_duplicate_returns_structured_error():
-    photo = FIXTURES / "HI758_calcium_display.jpg"
-    mcp_server.log_test_from_photo(
-        path=str(photo),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    result = mcp_server.log_test_from_photo(
-        path=str(photo),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "already_processed"
-    assert "already processed" in result["message"]
-    # Also prove the dedup path didn't double-write (would catch an impl
-    # that just hardcoded the error string and kept writing).
-    from reef_log import db as _db
-
-    conn = _db.connect(mcp_server._db_path_override)
-    try:
-        (n,) = conn.execute("SELECT COUNT(*) FROM test_results").fetchone()
-    finally:
-        conn.close()
-    assert n == 1
-
-
-def test_log_test_from_photo_missing_file_returns_structured_error(tmp_path: Path):
-    result = mcp_server.log_test_from_photo(
-        path=str(tmp_path / "nope.jpg"),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "not_found"
-
-
-def test_log_test_from_photo_non_image_returns_structured_error(tmp_path: Path):
-    fake = tmp_path / "not-really-a-photo.jpg"
-    fake.write_text("this is plain text, not a JPG")
-    result = mcp_server.log_test_from_photo(
-        path=str(fake),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "not_an_image"
-
-
-def test_log_test_from_photo_empty_file_returns_structured_error(tmp_path: Path):
-    empty = tmp_path / "empty.jpg"
-    empty.touch()
-    result = mcp_server.log_test_from_photo(
-        path=str(empty),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "invalid_photo"
-    assert "empty" in result["message"]
-
-
-def test_log_test_from_photo_invalid_tank_returns_structured_error(tmp_path: Path):
-    """Tank typo should surface as `invalid_tank`, not lumped into `invalid_photo`."""
-    result = mcp_server.log_test_from_photo(
-        path=str(FIXTURES / "HI758_calcium_display.jpg"),
-        tank="dispaly",  # typo
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "invalid_tank"
-    assert "unknown tank" in result["message"]
-
-
-def test_log_test_from_photo_heic_returns_not_an_image():
-    """HEIC is documented as unsupported (no pillow-heif dep). Pin the
-    contract so a transitive dep change doesn't silently flip behaviour.
-    """
-    heic = FIXTURES / "IMG_0752.HEIC"
-    result = mcp_server.log_test_from_photo(
-        path=str(heic),
-        tank="display",
-        measurements=[{"parameter": "calcium", "value": 446}],
-    )
-    assert result["error"] == "not_an_image"

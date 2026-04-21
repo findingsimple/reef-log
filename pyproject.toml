@@ -1,7 +1,7 @@
 [project]
 name = "reef-log"
 version = "0.1.0"
-description = "Local reef tank log with MCP server for Claude — water tests, maintenance events, photo backfill"
+description = "Local reef tank log with MCP server for Claude — water tests and maintenance events"
 authors = [{ name = "findingsimple" }]
 requires-python = ">=3.11"
 readme = "README.md"
@@ -9,7 +9,6 @@ license = { text = "MIT" }
 
 dependencies = [
     "mcp>=1.0.0",
-    "Pillow>=10.0.0",
     "click>=8.1.0",
 ]
 

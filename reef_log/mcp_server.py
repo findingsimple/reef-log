@@ -3,11 +3,6 @@
 Tools wrap ops.py one-to-one. Each tool opens a fresh DB connection,
 runs the operation, closes the connection. Tests monkeypatch
 `_db_path_override` to redirect at a tmp DB.
-
-Photo logging (`log_test_from_photo`) is conversational under option C:
-the calling Claude reads the image natively, supplies the measurements,
-and the server dedups by SHA-256 + parses EXIF for the timestamp. No
-server-side vision call is made.
 """
 
 from __future__ import annotations
@@ -19,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from PIL import UnidentifiedImageError
 
 from reef_log import db as db_module
 from reef_log import ops
@@ -137,64 +131,6 @@ def compare_trends(parameter: str, days: int = 90) -> dict[str, Any]:
     """Side-by-side trend stats for both tanks over the same window."""
     with _connection() as conn:
         return ops.compare_trends(conn, parameter, days=days)
-
-
-@mcp.tool()
-def log_test_from_photo(
-    path: str,
-    tank: str,
-    measurements: list[dict[str, Any]],
-    notes: str | None = None,
-) -> dict[str, Any]:
-    """Log a water-test session sourced from a Hanna LCD photo.
-
-    You (Claude) read the photo in conversation and supply `measurements`.
-    The server hashes the file (SHA-256), parses EXIF for measured_at,
-    and rejects duplicates — re-dropping the same photo in a new chat
-    returns an `already_processed` error rather than double-logging.
-
-    **Convention:** always state the readings you extracted ("I see calcium
-    446 ppm and magnesium 1380 ppm") in your reply BEFORE calling this tool,
-    so the user can correct a misread digit before anything is written.
-
-    path: absolute path to the photo file (JPG or PNG). HEIC is not supported
-        — Pillow can't decode HEIC without the optional pillow-heif plugin,
-        which is not a project dependency.
-    tank: 'display' or 'frag'.
-    measurements: list of {parameter, value, unit?, checker_model?}.
-        For HI774 ULR showing ppb, normalize ÷1000 and supply unit='ppm'.
-        Alkalinity is Salifert — never use this tool for alk; use log_test.
-    notes: optional free-form string.
-
-    Returns either {test_result_id, sha256, measured_at, tz_assumed} on
-    success, or {error, message} on a recognized failure. Recognized errors:
-    'already_processed', 'invalid_tank', 'not_found', 'not_an_image',
-    'invalid_photo'.
-    """
-    with _connection() as conn:
-        try:
-            return ops.log_test_from_photo(
-                conn,
-                path=path,
-                tank=tank,
-                measurements=measurements,
-                notes=notes,
-            )
-        except ops.AlreadyProcessed as exc:
-            # Covers both the pre-check path and the race-lost path —
-            # ops.log_test_from_photo translates IntegrityError → AlreadyProcessed
-            # so the message shape is identical either way.
-            return {"error": "already_processed", "message": str(exc)}
-        except ops.InvalidTank as exc:
-            return {"error": "invalid_tank", "message": str(exc)}
-        except FileNotFoundError as exc:
-            return {"error": "not_found", "message": str(exc)}
-        except UnidentifiedImageError as exc:
-            return {"error": "not_an_image", "message": str(exc)}
-        except ValueError as exc:
-            # Size-guard and any other validation ValueError not already
-            # handled by AlreadyProcessed / InvalidTank above.
-            return {"error": "invalid_photo", "message": str(exc)}
 
 
 def main() -> None:

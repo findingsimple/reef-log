@@ -131,9 +131,8 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
     """Wrap a block in BEGIN IMMEDIATE / COMMIT, rolling back on any exception.
 
     Required because `connect()` sets `isolation_level=None` (autocommit), so
-    multi-statement atomicity is the caller's responsibility. Used by
-    migrations and by `ops.log_test_from_photo` to keep the test session +
-    processed_photos write pair indivisible.
+    multi-statement atomicity is the caller's responsibility. Used by the
+    migration runner.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:

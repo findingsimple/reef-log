@@ -120,58 +120,6 @@ def maintenance_add(
     click.echo(f"Logged maintenance #{mid} ({tank}): {event_type}")
 
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-
-
-@main.group()
-def photos() -> None:
-    """Inspect photo backfill state."""
-
-
-@photos.command("pending")
-@click.argument(
-    "directory",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-)
-@click.option(
-    "--recursive",
-    "-r",
-    is_flag=True,
-    help="Scan subdirectories too (default: top level only).",
-)
-@click.pass_context
-def photos_pending(ctx: click.Context, directory: Path, recursive: bool) -> None:
-    """List photos in a directory that haven't been logged yet.
-
-    Hashes each .jpg / .jpeg / .png and checks processed_photos. Useful
-    before a Claude Desktop backfill conversation: you'll know how many
-    files are new vs. already done. HEIC files are skipped (not supported
-    without pillow-heif).
-    """
-    iterator = directory.rglob("*") if recursive else directory.iterdir()
-    candidates = sorted(p for p in iterator if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS)
-
-    if not candidates:
-        click.echo(f"No photos found in {directory}.")
-        return
-
-    conn = db_module.connect(ctx.obj["db_path"])
-    try:
-        pending, already = ops.partition_photos_by_processed(conn, candidates)
-    finally:
-        conn.close()
-
-    click.echo(f"Scanned {len(candidates)} file(s) in {directory}")
-    if pending:
-        click.echo(f"  {len(pending)} new (not yet logged):")
-        for p in pending:
-            click.echo(f"    {p}")
-    else:
-        click.echo("  0 new — nothing pending.")
-    if already:
-        click.echo(f"  {len(already)} already logged")
-
-
 @main.command("history")
 @click.option(
     "--tank",
