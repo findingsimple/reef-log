@@ -69,8 +69,9 @@ def log_maintenance(
     tank: 'display', 'frag', or 'both' (use 'both' for system-wide events
     like an RO/DI filter swap — read paths surface 'both' rows in either
     tank's view).
-    event_type: water_change, chemical_refill, equipment_change, filter_media,
-    livestock, or observation.
+    event_type: water_change, dosing_change, chemical_refill, equipment_change,
+    filter_media, livestock, or observation. Use dosing_change for dose-rate or
+    schedule changes; chemical_refill for topping up reservoirs.
     performed_at: ISO 8601 UTC; defaults to now.
     details: free-form JSON-serializable payload appropriate for the event_type.
     """
